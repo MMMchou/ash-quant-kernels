@@ -29,8 +29,8 @@ vLLM (`awq`, `awq_marlin`) and SGLang (`awq`, `awq_marlin`) load:
 
 | version | content | status |
 |---|---|---|
-| v0.1 | PyTorch reference, correctness tests, naive fused Triton kernel, benchmark harness | in progress |
-| v0.2 | autotune, split-K / stream-K for small M, load-once unpacking, profiling (Proton / Nsight Compute) + roofline | planned |
+| v0.1 | PyTorch reference, correctness tests, naive fused Triton kernel, benchmark harness | done |
+| v0.2 | load-once unpacking ✅, split-K ✅, tuning, cheaper reduction / stream-K, profiling (Proton / Nsight Compute) + roofline | in progress |
 | v0.3 | head-to-head with vLLM `awq_gemm_triton` and Marlin; compressed-tensors W4A16 layout; write-up | planned |
 | v0.4 | tree-attention verification kernel for speculative decoding (EAGLE draft trees) | planned |
 
@@ -52,17 +52,18 @@ python bench/bench_gemm.py --out results/h200-v0.1.md
 
 Benchmarks on H200 with Qwen3-8B layer shapes, group size 128: see `results/`.
 
-Current status (v0.1-naive, qkv_proj 6144×4096, us; details in
-[results/v0.1-naive-findings.md](results/v0.1-naive-findings.md)):
+Current status (qkv_proj 6144×4096, M=1, us; details in `results/`):
 
-| M | fp16 cuBLAS | ashqk v1 (naive) | vLLM awq_triton |
-|---|---|---|---|
-| 1 | 22.7 | 230.6 | 68.0 |
-| 16 | 23.2 | 228.5 | 66.8 |
-| 256 | 31.2 | 422.1 | 223.8 |
+| kernel | eager (`do_bench`) | CUDA graph |
+|---|---|---|
+| fp16 cuBLAS | 22.7 | 14.1 |
+| ashqk v1 (naive) | 230.6 | — |
+| vLLM awq_triton | 68.0 | — |
+| **ashqk v2** (load-once + split-K) | **41.5** | **22.9** |
 
-Correct (error equal to cuBLAS fp16) but slow: the naive kernel gathers each
-packed int32 8×. v0.2 goal: beat fp16 cuBLAS at M ≤ 16.
+v2 is correct (error equal to cuBLAS fp16), 5.6× faster than v1 and faster than
+vLLM's Triton AWQ path, but not yet faster than fp16: the K-loop is latency-bound
+(~330 GB/s). Next: more bytes in flight, cheaper split-K reduction, profiling.
 
 ## License
 
