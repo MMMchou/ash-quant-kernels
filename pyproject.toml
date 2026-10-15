@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ash-quant-kernels"
+version = "0.1.0.dev0"
+description = "Triton kernels for LLM weight-only quantized inference (AWQ-format W4A16), benchmarked on H200"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Ashan" }]
+requires-python = ">=3.10"
+dependencies = ["torch>=2.5", "triton>=3.1"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["ashqk*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
