@@ -26,6 +26,22 @@ def make_problem(m, n, k, group_size, seed=0):
     return x, qw, qz, s
 
 
+def _v1(x, qw, qz, s):
+    from ashqk.kernels.w4a16_gemm import w4a16_gemm
+    return w4a16_gemm(x, qw, qz, s)
+
+
+def _v2(split_k):
+    def f(x, qw, qz, s):
+        from ashqk.kernels.w4a16_gemm_v2 import w4a16_gemm_v2
+        return w4a16_gemm_v2(x, qw, qz, s, {"split_k": split_k})
+    return f
+
+
+IMPLS = {"v1": _v1, "v2-sk1": _v2(1), "v2-sk4": _v2(4)}
+
+
+@pytest.mark.parametrize("impl", list(IMPLS))
 @pytest.mark.parametrize("group_size", [32, 64, 128])
 @pytest.mark.parametrize(
     "m,n,k",
@@ -38,15 +54,13 @@ def make_problem(m, n, k, group_size, seed=0):
         (1024, 2048, 1024),
     ],
 )
-def test_w4a16_gemm_matches_fp32(m, n, k, group_size):
-    from ashqk.kernels.w4a16_gemm import w4a16_gemm
-
+def test_w4a16_gemm_matches_fp32(m, n, k, group_size, impl):
     if n % 8:
         pytest.skip("AWQ requires N % 8 == 0")
     x, qw, qz, s = make_problem(m, n, k, group_size)
     y_true = w4a16_gemm_fp32(x, qw, qz, s)
     y_cublas = x @ dequantize_awq(qw, qz, s, dtype=torch.float16)
-    y = w4a16_gemm(x, qw, qz, s)
+    y = IMPLS[impl](x, qw, qz, s)
 
     assert y.shape == (m, n) and y.dtype == torch.float16
     e_kernel, e_cublas = rel_err(y, y_true), rel_err(y_cublas, y_true)
