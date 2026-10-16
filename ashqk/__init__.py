@@ -1,3 +1,4 @@
+from .ops import w4a16_linear
 from .ref import (
     AWQ_ORDER,
     AWQ_REVERSE_ORDER,
@@ -10,6 +11,7 @@ from .ref import (
 )
 
 __all__ = [
+    "w4a16_linear",
     "AWQ_ORDER",
     "AWQ_REVERSE_ORDER",
     "dequantize_awq",

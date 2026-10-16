@@ -66,6 +66,18 @@ def _v3(split_k, block_k):
     return f
 
 
+def _gemv(block_m, split_k):
+    def f(x, qw, qz, s):
+        from ashqk.kernels.w4a16_gemv import w4a16_gemv
+        return w4a16_gemv(x, qw, qz, s, {"block_m": block_m, "split_k": split_k})
+    return f
+
+
+def _linear(x, qw, qz, s):
+    from ashqk.ops import w4a16_linear
+    return w4a16_linear(x, qw, qz, s)
+
+
 IMPLS = {
     "v1": _v1,
     "v2-sk1": _v2(1),
@@ -73,6 +85,9 @@ IMPLS = {
     "v3-sk1-bk64": _v3(1, 64),      # BLOCK_K <= group_size for every G tested
     "v3-sk1-bk128": _v3(1, 128),    # spans 4 / 2 / 1 groups for G = 32 / 64 / 128
     "v3-sk4-bk128": _v3(4, 128),    # single-launch split-K fixup
+    "gemv-bm1-sk1": _gemv(1, 1),
+    "gemv-bm4-sk8": _gemv(4, 8),    # M not a multiple of BLOCK_M for most shapes
+    "linear": _linear,              # dispatcher
 }
 
 
@@ -92,10 +107,22 @@ def test_w4a16_gemm_matches_fp32(m, n, k, group_size, impl):
     assert e_kernel <= 2 * e_cublas + 1e-5, f"kernel {e_kernel:.2e} vs cuBLAS {e_cublas:.2e}"
 
 
-@pytest.mark.parametrize("impl", ["v3-sk4-bk128"])
+@pytest.mark.parametrize("impl", ["v3-sk4-bk128", "gemv-bm4-sk8"])
 def test_split_k_workspace_is_reset(impl):
     """Repeated calls reuse the cached workspace; results must not accumulate."""
     x, qw, qz, s = make_problem(16, 256, 1024, 128)
     y1 = IMPLS[impl](x, qw, qz, s)
     y2 = IMPLS[impl](x, qw, qz, s)
     assert torch.equal(y1, y2)
+
+
+def test_linear_dispatch_and_batch_dims():
+    from ashqk.ops import w4a16_linear
+
+    x, qw, qz, s = make_problem(6, 128, 256, 64)
+    y = w4a16_linear(x.view(2, 3, -1), qw, qz, s)
+    assert y.shape == (2, 3, 128)
+    for m in (1, 2, 3):  # both sides of GEMV_MAX_M
+        y_true = w4a16_gemm_fp32(x[:m], qw, qz, s)
+        y_cublas = x[:m] @ dequantize_awq(qw, qz, s, dtype=torch.float16)
+        assert rel_err(w4a16_linear(x[:m], qw, qz, s), y_true) <= 2 * rel_err(y_cublas, y_true) + 1e-5
