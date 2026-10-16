@@ -7,6 +7,7 @@ Providers:
   ashqk-v1   naive fused Triton kernel
   ashqk-v2   load-once unpack (+ split-K)
   ashqk-v3   multi-group K tiles + single-launch split-K (default configs)
+  ashqk      public w4a16_linear dispatcher (GEMV for M <= 2, else v3)
 
 Metrics: latency (us), TFLOPS, effective bandwidth = bytes actually required / time,
 where bytes = x + packed weights + scales + zeros + y (W4A16) or x + fp16 W + y (fp16).
@@ -25,6 +26,7 @@ import triton
 from ashqk.kernels.w4a16_gemm import w4a16_gemm
 from ashqk.kernels.w4a16_gemm_v2 import w4a16_gemm_v2
 from ashqk.kernels.w4a16_gemm_v3 import w4a16_gemm_v3
+from ashqk.ops import w4a16_linear
 from ashqk.ref import dequantize_awq, quantize_awq, w4a16_gemm_ref
 
 # Qwen3-8B linear layers: (name, N, K); hidden 4096, intermediate 12288, GQA 32q/8kv x 128.
@@ -58,7 +60,7 @@ def bench_ms(fn, timer):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=None)
-    ap.add_argument("--providers", default="fp16,dequant+mm,ashqk-v2,ashqk-v3")
+    ap.add_argument("--providers", default="fp16,dequant+mm,ashqk-v3,ashqk")
     ap.add_argument("--timer", default="cudagraph", choices=["eager", "cudagraph"])
     ap.add_argument("--ms", default=",".join(map(str, MS)))
     args = ap.parse_args()
@@ -87,6 +89,7 @@ def main():
                 "ashqk-v1": (lambda: w4a16_gemm(x, qw, qz, s), w4a16_bytes(m, n, k, GROUP_SIZE)),
                 "ashqk-v2": (lambda: w4a16_gemm_v2(x, qw, qz, s), w4a16_bytes(m, n, k, GROUP_SIZE)),
                 "ashqk-v3": (lambda: w4a16_gemm_v3(x, qw, qz, s), w4a16_bytes(m, n, k, GROUP_SIZE)),
+                "ashqk": (lambda: w4a16_linear(x, qw, qz, s), w4a16_bytes(m, n, k, GROUP_SIZE)),
             }
             for p in providers:
                 fn, nbytes = fns[p]
