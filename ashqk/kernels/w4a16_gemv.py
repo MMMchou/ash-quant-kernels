@@ -120,8 +120,10 @@ def _workspace(m, n, num_tiles, device):
     return _WORKSPACE[key]
 
 
-def _default_config(M: int) -> dict:
-    # Tuned on H200, CUDA-graph timing (results/v0.2-step3-findings.md).
+def _default_config(M: int, N: int) -> dict:
+    # Tuned on H200, CUDA-graph timing (results/v0.2-step3-findings.md, v0.2-qwen3.5).
+    if N <= 256:  # skinny outputs (Qwen3.5 in_proj_ba, N=64): few column tiles -> split K hard
+        return dict(block_m=min(M, 2), block_n=32, block_k=128, split_k=32, num_warps=4, num_stages=2)
     if M == 1:
         return dict(block_m=1, block_n=128, block_k=128, split_k=16, num_warps=2, num_stages=2)
     return dict(block_m=2, block_n=128, block_k=64, split_k=16, num_warps=2, num_stages=2)
@@ -138,7 +140,7 @@ def w4a16_gemv(x, qweight, qzeros, scales, config: dict | None = None) -> torch.
     assert scales.shape == (K // group_size, N)
     assert K % group_size == 0
 
-    cfg = dict(_default_config(M), **(config or {}))
+    cfg = dict(_default_config(M, N), **(config or {}))
     block_k = cfg["block_k"]
     group_rows = min(block_k, group_size)
     assert group_size % group_rows == 0 and block_k % group_rows == 0, (block_k, group_size)
