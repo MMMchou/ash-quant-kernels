@@ -36,10 +36,20 @@ def pack_awq(x: torch.Tensor) -> torch.Tensor:
     return packed.to(torch.int32)
 
 
+_SHIFTS: dict = {}
+
+
+def _awq_shifts(device) -> torch.Tensor:
+    # Cached per device: creating it inside a CUDA-graph capture would be an illegal H2D copy.
+    if device not in _SHIFTS:
+        _SHIFTS[device] = torch.tensor(AWQ_REVERSE_ORDER, dtype=torch.int32, device=device) * 4
+    return _SHIFTS[device]
+
+
 def unpack_awq(packed: torch.Tensor) -> torch.Tensor:
     """Inverse of pack_awq: int32 [R, C] -> int32 [R, C * 8] with values in 0..15."""
     assert packed.dtype == torch.int32 and packed.dim() == 2
-    shifts = torch.tensor(AWQ_REVERSE_ORDER, dtype=torch.int32, device=packed.device) * 4
+    shifts = _awq_shifts(packed.device)
     # Arithmetic right shift on negative int32 is fine because we mask with 0xF.
     vals = (packed[..., None] >> shifts) & 0xF  # [R, C, 8]
     return vals.reshape(packed.shape[0], -1)
