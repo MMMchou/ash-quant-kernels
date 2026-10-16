@@ -4,7 +4,8 @@
 
 Triton kernels for weight-only quantized LLM inference, starting with an
 **AWQ-format W4A16 fused dequant-GEMM**, benchmarked on NVIDIA H200 against
-cuBLAS fp16 and the kernels used by vLLM / SGLang.
+cuBLAS fp16 and the kernels used by vLLM / SGLang, on **Qwen3.5-9B** layer shapes
+(Gated DeltaNet + gated attention hybrid).
 
 ## Why
 
@@ -52,20 +53,23 @@ python bench/bench_gemm.py --out results/h200-v0.1.md
 
 ## Results
 
-Benchmarks on H200 with Qwen3-8B layer shapes, group size 128: see `results/`.
+Benchmarks on H200, group size 128, shapes from `bench/shapes.py`: see `results/`.
 
-Current status (M=1 decode, CUDA-graph timing, us; details in `results/`):
+Current status: Qwen3.5-9B, M=1 decode, CUDA-graph timing, us
+([details](results/v0.2-qwen3.5-findings.md)):
 
-| layer | fp16 cuBLAS | **ashqk** (`w4a16_linear`) | speedup |
-|---|---|---|---|
-| qkv_proj 6144×4096 | 13.9 | **13.5** | 1.03× |
-| o_proj 4096×4096 | 10.0 | **9.2** | 1.09× |
-| gate_up_proj 24576×4096 | 50.2 | **48.6** | 1.03× |
-| down_proj 4096×12288 | 29.8 | **21.5** | 1.39× |
+| layer | N×K | fp16 cuBLAS | **ashqk** | speedup |
+|---|---|---|---|---|
+| in_proj_qkvz (DeltaNet) | 12288×4096 | 27.4 | **23.0** | 1.19× |
+| in_proj_ba (DeltaNet) | 64×4096 | 5.6 | **3.3** | 1.70× |
+| out_proj / o_proj | 4096×4096 | 9.9 | **9.2** | 1.08× |
+| qkv_proj (gated attn) | 10240×4096 | 22.2 | **19.7** | 1.13× |
+| gate_up_proj | 24576×4096 | 50.2 | **48.4** | 1.04× |
+| down_proj | 4096×12288 | 30.0 | **21.6** | 1.39× |
+| **all linear layers / token** | | **3854** | **3323** | **1.16×** |
 
-Optimization path on qkv_proj, M=1: naive v1 230.6 us (eager) → load-once v2 22.9 →
-single-launch split-K v3 19.8 → decode GEMV **13.5**. M ≥ 4 and prefill are not yet
-faster than fp16 — see `results/v0.2-step3-findings.md` for limits and next steps.
+M ≥ 4 and prefill are not yet faster than fp16 (see findings). Qwen3-8B shapes:
+`python bench/bench_gemm.py --model qwen3-8b`.
 
 ```python
 from ashqk import w4a16_linear  # AutoAWQ qweight / qzeros / scales
@@ -75,10 +79,11 @@ y = w4a16_linear(x, qweight, qzeros, scales)
 ## Changelog
 
 Newest first. Every entry links to the findings note with full numbers.
-Timings: H200, Qwen3-8B qkv_proj (6144×4096), M = 1, CUDA graph unless noted.
+Timings: H200, M = 1, CUDA graph unless noted. Column "qkv_proj M=1" is Qwen3-8B qkv_proj (6144×4096) for comparability.
 
 | date | change | qkv_proj M=1 | notes |
 |---|---|---|---|
+| 2026-10-16 | benchmark target → Qwen3.5-9B shapes; skinny-N GEMV config; flaky split-K test fixed | 13.5 us | Qwen3.5-9B all linear layers 1.16× fp16 per token — [qwen3.5](results/v0.2-qwen3.5-findings.md) |
 | 2026-10-16 | decode GEMV (no `tl.dot`, per-group factored dequant) + `w4a16_linear` dispatcher | **13.5 us** (fp16 13.9) | first win over fp16 on all 4 layers; down_proj 1.39× — [step 3](results/v0.2-step3-findings.md) |
 | 2026-10-16 | v3: multi-group K tiles, single-launch split-K; CUDA-graph timer; CPU CI | 19.8 us | HBM not the limit (load-only 3.4 TB/s); nibble-sliced v4 rejected — [step 2](results/v0.2-step2-findings.md) |
 | 2026-10-15 | v2: load-once unpack via `tl.interleave`, split-K | 22.9 us | 5.6× over v1, faster than vLLM `awq_triton` — [step 1](results/v0.2-step1-findings.md) |
