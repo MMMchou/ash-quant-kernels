@@ -1,4 +1,4 @@
-"""Benchmark W4A16 GEMM on real LLM layer shapes.
+"""Benchmark W4A16 GEMM on real LLM layer shapes (bench/shapes.py; default Qwen3.5-9B).
 
 Providers:
   fp16       cuBLAS fp16 GEMM with an already-dequantized W (the fp16 model; upper bound
@@ -12,7 +12,7 @@ Providers:
 Metrics: latency (us), TFLOPS, effective bandwidth = bytes actually required / time,
 where bytes = x + packed weights + scales + zeros + y (W4A16) or x + fp16 W + y (fp16).
 
-Usage: python bench/bench_gemm.py [--timer cudagraph|eager] [--out results/<name>.md]
+Usage: python bench/bench_gemm.py [--model qwen3.5-9b|qwen3-8b] [--timer cudagraph|eager] [--out results/<name>.md]
 """
 
 from __future__ import annotations
@@ -20,8 +20,14 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 
+import os
+import sys
+
 import torch
 import triton
+
+sys.path.insert(0, os.path.dirname(__file__))
+from shapes import DEFAULT_MODEL, MODELS  # noqa: E402
 
 from ashqk.kernels.w4a16_gemm import w4a16_gemm
 from ashqk.kernels.w4a16_gemm_v2 import w4a16_gemm_v2
@@ -29,13 +35,6 @@ from ashqk.kernels.w4a16_gemm_v3 import w4a16_gemm_v3
 from ashqk.ops import w4a16_linear
 from ashqk.ref import dequantize_awq, quantize_awq, w4a16_gemm_ref
 
-# Qwen3-8B linear layers: (name, N, K); hidden 4096, intermediate 12288, GQA 32q/8kv x 128.
-SHAPES = [
-    ("qkv_proj", 6144, 4096),
-    ("o_proj", 4096, 4096),
-    ("gate_up_proj", 24576, 4096),
-    ("down_proj", 4096, 12288),
-]
 MS = [1, 16, 64, 256, 1024, 4096]
 GROUP_SIZE = 128
 
@@ -61,6 +60,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=None)
     ap.add_argument("--providers", default="fp16,dequant+mm,ashqk-v3,ashqk")
+    ap.add_argument("--model", default=DEFAULT_MODEL, choices=list(MODELS))
     ap.add_argument("--timer", default="cudagraph", choices=["eager", "cudagraph"])
     ap.add_argument("--ms", default=",".join(map(str, MS)))
     args = ap.parse_args()
@@ -69,6 +69,7 @@ def main():
     dev = torch.cuda.get_device_name()
     header = (
         f"# W4A16 GEMM benchmark\n\n"
+        f"- model shapes: {args.model}\n"
         f"- device: {dev}; torch {torch.__version__}; triton {triton.__version__}\n"
         f"- date: {dt.date.today()}; group_size {GROUP_SIZE}; timer: {args.timer}\n"
         f"- BW% = effective bandwidth / {H200_HBM_TBPS} TB/s\n\n"
@@ -76,7 +77,7 @@ def main():
         "|---|---|---|---|---|---|---|---|---|\n"
     )
     rows = []
-    for name, n, k in SHAPES:
+    for name, n, k, _ in MODELS[args.model]:
         torch.manual_seed(0)
         w = torch.randn(k, n, device="cuda") * 0.02
         qw, qz, s = quantize_awq(w, GROUP_SIZE)

@@ -1,6 +1,6 @@
 """Grid-search launch configs per (layer, M); prints best config and speed vs fp16.
 
-Usage: python bench/tune.py --impl v3 --timer cudagraph [--ms 1,16] [--top 3]
+Usage: python bench/tune.py --model qwen3.5-9b --impl gemv --timer cudagraph [--ms 1,16] [--top 3]
 """
 
 from __future__ import annotations
@@ -8,24 +8,31 @@ from __future__ import annotations
 import argparse
 import itertools
 
+import os
+import sys
+
 import torch
 import triton
 
+sys.path.insert(0, os.path.dirname(__file__))
+from shapes import DEFAULT_MODEL, MODELS  # noqa: E402
+
 from ashqk.kernels.w4a16_gemm_v2 import w4a16_gemm_v2
 from ashqk.kernels.w4a16_gemm_v3 import w4a16_gemm_v3
+from ashqk.kernels.w4a16_gemv import w4a16_gemv
 
-IMPLS = {"v2": w4a16_gemm_v2, "v3": w4a16_gemm_v3}
+IMPLS = {"v2": w4a16_gemm_v2, "v3": w4a16_gemm_v3, "gemv": w4a16_gemv}
 from ashqk.ref import quantize_awq
 
-SHAPES = [
-    ("qkv_proj", 6144, 4096),
-    ("o_proj", 4096, 4096),
-    ("gate_up_proj", 24576, 4096),
-    ("down_proj", 4096, 12288),
-]
 
 
 def space(m, impl):
+    if impl == "gemv":
+        for bm, bn, bk, sk, nw in itertools.product(
+            sorted({1, 2, 4} & set(range(1, m + 1))), [32, 64, 128], [32, 64, 128], [4, 8, 16, 32], [2, 4]
+        ):
+            yield dict(block_m=bm, block_n=bn, block_k=bk, split_k=sk, num_warps=nw, num_stages=2)
+        return
     bms = [16] if m <= 16 else [16, 32, 64, 128]
     bks = [32, 64, 128] if impl == "v2" else [64, 128, 256, 512]
     for bm, bn, bk, sk, nw, ns in itertools.product(
@@ -43,6 +50,7 @@ def main():
     ap.add_argument("--impl", default="v3", choices=list(IMPLS))
     ap.add_argument("--timer", default="cudagraph", choices=["eager", "cudagraph"])
     ap.add_argument("--layers", default=None)
+    ap.add_argument("--model", default=DEFAULT_MODEL, choices=list(MODELS))
     args = ap.parse_args()
     fn = IMPLS[args.impl]
 
@@ -51,7 +59,7 @@ def main():
             return triton.testing.do_bench_cudagraph(f, rep=rep) * 1e3
         return triton.testing.do_bench(f, warmup=5, rep=rep) * 1e3
 
-    for name, n, k in SHAPES:
+    for name, n, k, _ in MODELS[args.model]:
         if args.layers and name not in args.layers.split(","):
             continue
         torch.manual_seed(0)
