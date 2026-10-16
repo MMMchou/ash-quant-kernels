@@ -34,7 +34,7 @@ vLLM (`awq`, `awq_marlin`) and SGLang (`awq`, `awq_marlin`) load:
 |---|---|---|
 | v0.1 | PyTorch reference, correctness tests, naive fused Triton kernel, benchmark harness | done |
 | v0.2 | load-once unpacking ✅, single-launch split-K ✅, multi-group K tiles ✅, CUDA-graph timing ✅, CI ✅; decode GEMV path ✅ (beats fp16 at M=1); profiling, 4 ≤ M ≤ 16 | in progress |
-| v0.3 | head-to-head with vLLM `awq_gemm_triton` and Marlin; compressed-tensors W4A16 layout; write-up | planned |
+| v0.3 | head-to-head with Marlin ✅ (Marlin 1.67× faster at M=1); Marlin-style offline repack + lop3 unpack in Triton; SGLang integration + e2e; write-up | in progress |
 | v0.4 | tree-attention verification kernel for speculative decoding (EAGLE draft trees) | planned |
 
 ## Correctness criterion
@@ -55,21 +55,17 @@ python bench/bench_gemm.py --out results/h200-v0.1.md
 
 Benchmarks on H200, group size 128, shapes from `bench/shapes.py`: see `results/`.
 
-Current status: Qwen3.5-9B, M=1 decode, CUDA-graph timing, us
-([details](results/v0.2-qwen3.5-findings.md)):
+Current status: Qwen3.5-9B, all linear layers per decoded token, CUDA-graph timing, us
+([vs SGLang kernels](results/v0.2-vs-marlin-findings.md), [per layer](results/v0.2-qwen3.5-findings.md)):
 
-| layer | N×K | fp16 cuBLAS | **ashqk** | speedup |
+| M | fp16 cuBLAS | SGLang `awq_marlin` (production) | SGLang `awq` | **ashqk** |
 |---|---|---|---|---|
-| in_proj_qkvz (DeltaNet) | 12288×4096 | 27.4 | **23.0** | 1.19× |
-| in_proj_ba (DeltaNet) | 64×4096 | 5.6 | **3.3** | 1.70× |
-| out_proj / o_proj | 4096×4096 | 9.9 | **9.2** | 1.08× |
-| qkv_proj (gated attn) | 10240×4096 | 22.2 | **19.7** | 1.13× |
-| gate_up_proj | 24576×4096 | 50.2 | **48.4** | 1.04× |
-| down_proj | 4096×12288 | 30.0 | **21.6** | 1.39× |
-| **all linear layers / token** | | **3854** | **3323** | **1.16×** |
+| 1 | 3886 | **1990** | 9445 | 3325 |
+| 4 | 3899 | **2002** | 9431 | 5580 |
 
-M ≥ 4 and prefill are not yet faster than fp16 (see findings). Qwen3-8B shapes:
-`python bench/bench_gemm.py --model qwen3-8b`.
+Honest summary: ashqk beats fp16 cuBLAS (1.16×) and SGLang's non-Marlin AWQ path (2.8×) at M=1,
+but **Marlin is still 1.67× faster**. Closing that gap (offline repack into tensor-core operand order,
+lop3 int4→fp16) is the v0.3 goal.
 
 ```python
 from ashqk import w4a16_linear  # AutoAWQ qweight / qzeros / scales
@@ -83,6 +79,7 @@ Timings: H200, M = 1, CUDA graph unless noted. Column "qkv_proj M=1" is Qwen3-8B
 
 | date | change | qkv_proj M=1 | notes |
 |---|---|---|---|
+| 2026-10-16 | head-to-head vs SGLang 0.5.9 `awq_marlin` / `awq` (`bench/bench_vs_sglang.py`) | 13.5 us | Marlin 1990 vs ashqk 3325 us/token at M=1 → Marlin 1.67× faster; ashqk 2.8× faster than SGLang `awq` — [vs marlin](results/v0.2-vs-marlin-findings.md) |
 | 2026-10-16 | benchmark target → Qwen3.5-9B shapes; skinny-N GEMV config; flaky split-K test fixed | 13.5 us | Qwen3.5-9B all linear layers 1.16× fp16 per token — [qwen3.5](results/v0.2-qwen3.5-findings.md) |
 | 2026-10-16 | decode GEMV (no `tl.dot`, per-group factored dequant) + `w4a16_linear` dispatcher | **13.5 us** (fp16 13.9) | first win over fp16 on all 4 layers; down_proj 1.39× — [step 3](results/v0.2-step3-findings.md) |
 | 2026-10-16 | v3: multi-group K tiles, single-launch split-K; CUDA-graph timer; CPU CI | 19.8 us | HBM not the limit (load-only 3.4 TB/s); nibble-sliced v4 rejected — [step 2](results/v0.2-step2-findings.md) |
