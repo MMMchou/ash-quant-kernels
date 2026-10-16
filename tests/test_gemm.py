@@ -59,7 +59,21 @@ def _v2(split_k):
     return f
 
 
-IMPLS = {"v1": _v1, "v2-sk1": _v2(1), "v2-sk4": _v2(4)}
+def _v3(split_k, block_k):
+    def f(x, qw, qz, s):
+        from ashqk.kernels.w4a16_gemm_v3 import w4a16_gemm_v3
+        return w4a16_gemm_v3(x, qw, qz, s, {"split_k": split_k, "block_k": block_k})
+    return f
+
+
+IMPLS = {
+    "v1": _v1,
+    "v2-sk1": _v2(1),
+    "v2-sk4": _v2(4),
+    "v3-sk1-bk64": _v3(1, 64),      # BLOCK_K <= group_size for every G tested
+    "v3-sk1-bk128": _v3(1, 128),    # spans 4 / 2 / 1 groups for G = 32 / 64 / 128
+    "v3-sk4-bk128": _v3(4, 128),    # single-launch split-K fixup
+}
 
 
 @pytest.mark.parametrize("impl", list(IMPLS))
@@ -76,3 +90,12 @@ def test_w4a16_gemm_matches_fp32(m, n, k, group_size, impl):
     assert y.shape == (m, n) and y.dtype == torch.float16
     e_kernel, e_cublas = rel_err(y, y_true), rel_err(y_cublas, y_true)
     assert e_kernel <= 2 * e_cublas + 1e-5, f"kernel {e_kernel:.2e} vs cuBLAS {e_cublas:.2e}"
+
+
+@pytest.mark.parametrize("impl", ["v3-sk4-bk128"])
+def test_split_k_workspace_is_reset(impl):
+    """Repeated calls reuse the cached workspace; results must not accumulate."""
+    x, qw, qz, s = make_problem(16, 256, 1024, 128)
+    y1 = IMPLS[impl](x, qw, qz, s)
+    y2 = IMPLS[impl](x, qw, qz, s)
+    assert torch.equal(y1, y2)
