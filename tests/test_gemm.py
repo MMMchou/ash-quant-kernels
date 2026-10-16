@@ -27,11 +27,15 @@ GPU_SHAPES = [
     (33, 1000, 512),     # N not a multiple of BLOCK_N (but of 8)
     (256, 4096, 12288),  # down_proj, large K
     (1024, 2048, 1024),
+    (1, 12288, 4096),    # Qwen3.5 in_proj_qkvz
+    (4, 64, 4096),       # Qwen3.5 in_proj_ba: N smaller than BLOCK_N
+    (2, 10240, 4096),    # Qwen3.5 gated qkv_proj
 ]
 CPU_SHAPES = [
     (1, 64, 256),
     (7, 72, 256),        # N not a multiple of BLOCK_N
     (17, 128, 384),      # M > BLOCK_M, K not a power of 2
+    (2, 64, 256),        # N < BLOCK_N (Qwen3.5 in_proj_ba)
 ]
 
 
@@ -109,11 +113,16 @@ def test_w4a16_gemm_matches_fp32(m, n, k, group_size, impl):
 
 @pytest.mark.parametrize("impl", ["v3-sk4-bk128", "gemv-bm4-sk8"])
 def test_split_k_workspace_is_reset(impl):
-    """Repeated calls reuse the cached workspace; results must not accumulate."""
+    """Repeated calls reuse the cached workspace; results must not accumulate.
+
+    Not bitwise: fp32 atomics from split-K CTAs land in nondeterministic order (ulp-level).
+    """
     x, qw, qz, s = make_problem(16, 256, 1024, 128)
-    y1 = IMPLS[impl](x, qw, qz, s)
-    y2 = IMPLS[impl](x, qw, qz, s)
-    assert torch.equal(y1, y2)
+    y_true = w4a16_gemm_fp32(x, qw, qz, s)
+    y_cublas = x @ dequantize_awq(qw, qz, s, dtype=torch.float16)
+    for _ in range(3):
+        y = IMPLS[impl](x, qw, qz, s)
+        assert rel_err(y, y_true) <= 2 * rel_err(y_cublas, y_true) + 1e-5
 
 
 def test_linear_dispatch_and_batch_dims():
