@@ -1,5 +1,7 @@
 # ash-quant-kernels
 
+[![tests](https://github.com/MMMchou/ash-quant-kernels/actions/workflows/tests.yml/badge.svg)](https://github.com/MMMchou/ash-quant-kernels/actions/workflows/tests.yml)
+
 Triton kernels for weight-only quantized LLM inference, starting with an
 **AWQ-format W4A16 fused dequant-GEMM**, benchmarked on NVIDIA H200 against
 cuBLAS fp16 and the kernels used by vLLM / SGLang.
