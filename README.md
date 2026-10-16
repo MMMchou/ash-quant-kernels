@@ -72,6 +72,18 @@ from ashqk import w4a16_linear  # AutoAWQ qweight / qzeros / scales
 y = w4a16_linear(x, qweight, qzeros, scales)
 ```
 
+## Changelog
+
+Newest first. Every entry links to the findings note with full numbers.
+Timings: H200, Qwen3-8B qkv_proj (6144×4096), M = 1, CUDA graph unless noted.
+
+| date | change | qkv_proj M=1 | notes |
+|---|---|---|---|
+| 2026-10-16 | decode GEMV (no `tl.dot`, per-group factored dequant) + `w4a16_linear` dispatcher | **13.5 us** (fp16 13.9) | first win over fp16 on all 4 layers; down_proj 1.39× — [step 3](results/v0.2-step3-findings.md) |
+| 2026-10-16 | v3: multi-group K tiles, single-launch split-K; CUDA-graph timer; CPU CI | 19.8 us | HBM not the limit (load-only 3.4 TB/s); nibble-sliced v4 rejected — [step 2](results/v0.2-step2-findings.md) |
+| 2026-10-15 | v2: load-once unpack via `tl.interleave`, split-K | 22.9 us | 5.6× over v1, faster than vLLM `awq_triton` — [step 1](results/v0.2-step1-findings.md) |
+| 2026-10-15 | v0.1: AWQ-format reference, tests, naive fused kernel, bench harness | 230.6 us (eager) | each packed word loaded 8× — [naive](results/v0.1-naive-findings.md) |
+
 ## License
 
 Apache-2.0
